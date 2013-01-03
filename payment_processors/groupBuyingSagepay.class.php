@@ -14,7 +14,7 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		CURRENCY_CODE_OPTION = 'gb_sagepay_currency',
 		API_MODE_OPTION = 'gb_sagepay_mode',
 		PAYMENT_METHOD = 'Credit (SagePay)',
-		TYPE = 'PAYMENT',	// Transaction type
+		TYPE = 'DEFERRED',	// Transaction type
 		PROTOCOL_VERSION = '2.23',	// SagePay protocol vers no
 		VENDOR = 'group_buying_site',
 		LOGS = TRUE;	// enable logging
