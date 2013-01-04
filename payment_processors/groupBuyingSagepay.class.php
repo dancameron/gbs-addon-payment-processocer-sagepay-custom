@@ -6,6 +6,9 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		API_ENDPOINT_SIM = 'https://test.sagepay.com/Simulator/VSPDirectGateway.asp',
 		API_ENDPOINT_SANDBOX = 'https://test.sagepay.com/gateway/service/vspdirect-register.vsp',
 		API_ENDPOINT_LIVE = 'https://live.sagepay.com/gateway/service/vspdirect-register.vsp',
+		API_RELEASE_ENDPOINT_SIM = 'https://test.sagepay.com/Simulator/release.asp',
+		API_RELEASE_ENDPOINT_SANDBOX = 'https://test.sagepay.com/gateway/service/release.vsp',
+		API_RELEASE_ENDPOINT_LIVE = 'https://live.sagepay.com/gateway/service/release.vsp',
 		MODE_TEST = 'sandbox',
 		MODE_LIVE = 'live',
 		MODE_SIM = 'simulator',
@@ -55,13 +58,24 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		return self::$instance;
 	}
 
-	private function get_api_url() {
-		if ( $this->api_mode == self::MODE_LIVE ) {
-			return self::API_ENDPOINT_LIVE;
-		} elseif ( $this->api_mode == self::MODE_SIM ) {
-			return self::API_ENDPOINT_SIM;
-		} else {
-			return self::API_ENDPOINT_SANDBOX;
+	private function get_api_url( $release = FALSE ) {
+		if ( $release ) {
+			if ( $this->api_mode == self::MODE_LIVE ) {
+				return self::API_RELEASE_ENDPOINT_LIVE;
+			} elseif ( $this->api_mode == self::MODE_SIM ) {
+				return self::API_RELEASE_ENDPOINT_SIM;
+			} else {
+				return self::API_RELEASE_ENDPOINT_SANDBOX;
+			}
+		}
+		else {
+			if ( $this->api_mode == self::MODE_LIVE ) {
+				return self::API_ENDPOINT_LIVE;
+			} elseif ( $this->api_mode == self::MODE_SIM ) {
+				return self::API_ENDPOINT_SIM;
+			} else {
+				return self::API_ENDPOINT_SANDBOX;
+			}
 		}
 	}
 
@@ -77,7 +91,7 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		$this->currency_code = get_option(self::CURRENCY_CODE_OPTION, 'GBP');
 
 		add_action('admin_init', array($this, 'register_settings'), 10, 0);
-		add_action('purchase_completed', array($this, 'complete_purchase'), 10, 1);
+		add_action('purchase_completed', array($this, 'capture_purchase'), 10, 1);
 
 		if ( self::DEBUG ) {
 			add_action('init', array($this, 'capture_pending_payments'));
@@ -87,7 +101,7 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 	}
 
 	public static function register() {
-		self::add_payment_processor(__CLASS__, self::__('SagePay'));
+		self::add_payment_processor(__CLASS__, self::__('SagePay (custom)'));
 	}
 
 	/**
@@ -178,28 +192,132 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		}
 		$payment = Group_Buying_Payment::get_instance($payment_id);
 		do_action('payment_authorized', $payment);
-		$payment->set_data($response);
 		return $payment;
 	}
 
 	/**
-	 * Complete the purchase after the process_payment action, otherwise vouchers will not be activated.
+	 * Capture a pre-authorized payment
 	 *
 	 * @param Group_Buying_Purchase $purchase
 	 * @return void
 	 */
-	public function complete_purchase( Group_Buying_Purchase $purchase ) {
-		$items_captured = array(); // Creating simple array of items that are captured
-		foreach ( $purchase->get_products() as $item ) {
-			$items_captured[] = $item['deal_id'];
-		}
+	public function capture_purchase( Group_Buying_Purchase $purchase ) {
 		$payments = Group_Buying_Payment::get_payments_for_purchase($purchase->get_id());
 		foreach ( $payments as $payment_id ) {
 			$payment = Group_Buying_Payment::get_instance($payment_id);
-			do_action('payment_captured', $payment, $items_captured);
-			do_action('payment_complete', $payment);
-			$payment->set_status(Group_Buying_Payment::STATUS_COMPLETE);
+			$this->capture_payment($payment);
 		}
+	}
+
+	/**
+	 * Try to capture all pending payments
+	 *
+	 * @return void
+	 */
+	public function capture_pending_payments() {
+		$payments = Group_Buying_Payment::get_pending_payments();
+		foreach ( $payments as $payment_id ) {
+			$payment = Group_Buying_Payment::get_instance($payment_id);
+			$this->capture_payment($payment);
+		}
+	}
+
+	public  function capture_payment( Group_Buying_Payment $payment ) {
+		// is this the right payment processor? does the payment still need processing?
+		if ( $payment->get_payment_method() == $this->get_payment_method() && $payment->get_status() != Group_Buying_Payment::STATUS_COMPLETE ) {
+			$data = $payment->get_data();
+			
+			// Do we have a transaction ID to use for the capture?
+			if ( isset($data['api_response']) ) {
+				
+				$items_to_capture = $this->items_to_capture($payment);
+				if ( $items_to_capture ) {
+			
+					$transaction_id = $data['api_response']['VPSTxId'];
+					$security_id = $data['api_response']['SecurityKey'];
+					$transaction_auth_id = $data['api_response']['TxAuthNo'];
+						
+					$post_data = $this->capture_nvp_data($transaction_id, $security_id, $transaction_auth_id, $items_to_capture);
+					$post_string = $this->format_data($post_data);
+
+					if ( self::DEBUG || self::LOGS) {
+						error_log('----------SagePay RELEASE Request----------');
+						error_log(print_r($post_data, TRUE));
+					}
+					$raw_response = wp_remote_post( $this->get_api_url( TRUE ), array(
+			  			'method' => 'POST',
+						'body' => $post_string,
+						'timeout' => apply_filters( 'http_request_timeout', 15),
+						'sslverify' => false
+					));
+					
+					if ( !is_wp_error($post_response) && $post_response['response']['code'] == '200' ) {
+						
+						$response_body = wp_remote_retrieve_body($raw_response);
+						
+						if ( self::DEBUG|| self::LOGS ) {
+							error_log('----------Sagepay RELEASE Response----------');
+							error_log(print_r($response_body, TRUE));
+						}
+
+						$response = array();
+						// Turn the reponse into an associative array
+						$response_array = explode("\r\n", $response_body);
+						for ($i=0; $i < sizeof($response_array); $i++) {
+						  $key = substr($response_array[$i],0, strpos($response_array[$i], '='));
+						  $response[$key] = substr(strstr($response_array[$i], '='), 1);
+						}
+
+						if ( self::DEBUG || self::LOGS ) self::set_error_messages( '----------Response----------' . print_r($response, TRUE), FALSE);
+
+						$this->set_status($response);
+		
+						if ( $response['Status'] == 'OK' ) {
+							foreach ( $items_to_capture as $deal_id => $amount ) {
+								unset($data['uncaptured_deals'][$deal_id]);
+							}
+							if ( !isset($data['capture_response']) ) {
+								$data['capture_response'] = array();
+							}
+							$data['capture_response'][] = $response;
+							$payment->set_data($data);
+							do_action('payment_captured', $payment, array_keys($items_to_capture));
+							$payment->set_status(Group_Buying_Payment::STATUS_COMPLETE);
+							do_action('payment_complete', $payment);
+						} else {
+							$this->set_error_messages($response, FALSE);
+						}
+
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * The the NVP data for submitting a DoCapture request
+	 *
+	 * @param string $transaction_id
+	 * @param array $items
+	 * @return array
+	 */
+	private function capture_nvp_data( $transaction_id, $security_id, $transaction_auth_id, $items ) {
+		$total = 0;
+		foreach ( $items as $price ) {
+			$total += $price;
+		}
+		$nvpData = array();
+		$nvpData['VPSProtocol'] = self::PROTOCOL_VERSION;
+		$nvpData['TxType'] = 'RELEASE';
+		$nvpData['Vendor'] = $this->vender_name;
+		$nvpData['VendorTxCode'] = 'purchase_id_'.$purchase->get_ID();
+		$nvpData['VPSTxId'] = $transaction_id;
+		$nvpData['SecurityKey'] = $security_id;
+		$nvpData['TxAuthNo'] = $transaction_auth_id;
+		$nvpData['ReleaseAmount'] = gb_get_number_format( $total );
+
+		$nvpData = apply_filters('gb_asagepay_capture_nvp_data', $nvpData);
+		return $nvpData;
 	}
 
 	public static function set_status( $response ) {
@@ -265,11 +383,13 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 			self::set_message($response, self::MESSAGE_STATUS_ERROR);
 		} 
 		if ( !$display && self::LOGS ) {
+			/*/
 			$log_file = dirname( __FILE__ ) . '/logs/error.log';
 			$fp = fopen( $log_file , 'a' );
-			fwrite( $fp, $response . "\n\n================" . time()."===================\n" );
+			fwrite( $fp, $response . "\n\n================" . time() . "===================\n" );
 			fclose( $fp ); // close file
 			// chmod( $log_file , 0600 );
+			/**/
 			error_log($response);
 		}
 	}
