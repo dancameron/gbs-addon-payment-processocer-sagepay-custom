@@ -1,8 +1,8 @@
 <?php
 /*
-Plugin Name: Group Buying Addon - Cart Disabler and Purchase Limit Enabler
-Version: 1.1
-Description: Disables the ability to purchase multiple deals by limiting the GBS cart. Enables purchase limits on gateways that intentionally remove the functionality and modifies the payment gateways to run authorization and automatic capturing (limited support). Supported Gateways: Authorize.net. Beta: NMI
+Plugin Name: Group Buying Addon - Cart Disabler and Purchase Limit Enabler for Sagepay
+Version: .1
+Description: Disables the ability to purchase multiple deals by limiting the GBS cart. Enables purchase limits on gateways that intentionally remove the functionality and modifies the payment gateways to run authorization and automatic capturing (limited support). Supported Gateways: Sagepay
 Plugin URI: http://groupbuyingsite.com/marketplace
 Author: GroupBuyingSite.com
 Author URI: http://groupbuyingsite.com/features
