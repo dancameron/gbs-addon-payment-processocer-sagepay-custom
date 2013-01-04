@@ -183,9 +183,12 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 			'data' => array(
 				'api_response' => $response,
 				'masked_cc_number' => $this->mask_card_number($this->cc_cache['cc_number']), // save for possible credits later
+				'uncaptured_deals' => $deal_info,
+				'purchase_id' => $purchase->get_ID()
 			),
 			'deals' => $deal_info,
 			'shipping_address' => $shipping_address,
+			'transaction_id' => $response['VPSTxId']
 		), Group_Buying_Payment::STATUS_AUTHORIZED);
 		if ( !$payment_id ) {
 			return FALSE;
@@ -226,7 +229,6 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		// is this the right payment processor? does the payment still need processing?
 		if ( $payment->get_payment_method() == $this->get_payment_method() && $payment->get_status() != Group_Buying_Payment::STATUS_COMPLETE ) {
 			$data = $payment->get_data();
-			
 			// Do we have a transaction ID to use for the capture?
 			if ( isset($data['api_response']) ) {
 				
@@ -236,13 +238,15 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 					$transaction_id = $data['api_response']['VPSTxId'];
 					$security_id = $data['api_response']['SecurityKey'];
 					$transaction_auth_id = $data['api_response']['TxAuthNo'];
+					$purchase_id = $data['purchase_id'];
 						
-					$post_data = $this->capture_nvp_data($transaction_id, $security_id, $transaction_auth_id, $items_to_capture);
+					$post_data = $this->capture_nvp_data($transaction_id, $security_id, $transaction_auth_id, $purchase_id, $items_to_capture);
 					$post_string = $this->format_data($post_data);
 
 					if ( self::DEBUG || self::LOGS) {
 						error_log('----------SagePay RELEASE Request----------');
 						error_log(print_r($post_data, TRUE));
+						error_log(print_r($post_string, TRUE));
 					}
 					$raw_response = wp_remote_post( $this->get_api_url( TRUE ), array(
 			  			'method' => 'POST',
@@ -250,12 +254,13 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 						'timeout' => apply_filters( 'http_request_timeout', 15),
 						'sslverify' => false
 					));
+					if ( self::DEBUG || self::LOGS ) self::set_error_messages( '----------RELEASE RAW Response Body----------' . print_r($raw_response, TRUE), FALSE);
 					
-					if ( !is_wp_error($post_response) && $post_response['response']['code'] == '200' ) {
+					if ( !is_wp_error($raw_response) && $raw_response['response']['code'] == '200' ) {
 						
 						$response_body = wp_remote_retrieve_body($raw_response);
 						
-						if ( self::DEBUG|| self::LOGS ) {
+						if ( self::DEBUG || self::LOGS ) {
 							error_log('----------Sagepay RELEASE Response----------');
 							error_log(print_r($response_body, TRUE));
 						}
@@ -268,9 +273,7 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 						  $response[$key] = substr(strstr($response_array[$i], '='), 1);
 						}
 
-						if ( self::DEBUG || self::LOGS ) self::set_error_messages( '----------Response----------' . print_r($response, TRUE), FALSE);
-
-						$this->set_status($response);
+						if ( self::DEBUG || self::LOGS ) self::set_error_messages( '---------RELEASE-Response----------' . print_r($response, TRUE), FALSE);
 		
 						if ( $response['Status'] == 'OK' ) {
 							foreach ( $items_to_capture as $deal_id => $amount ) {
@@ -301,7 +304,7 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 	 * @param array $items
 	 * @return array
 	 */
-	private function capture_nvp_data( $transaction_id, $security_id, $transaction_auth_id, $items ) {
+	private function capture_nvp_data( $transaction_id, $security_id, $transaction_auth_id, $purchase_id, $items ) {
 		$total = 0;
 		foreach ( $items as $price ) {
 			$total += $price;
@@ -310,7 +313,7 @@ class Group_Buying_SagePay_DC extends Group_Buying_Credit_Card_Processors {
 		$nvpData['VPSProtocol'] = self::PROTOCOL_VERSION;
 		$nvpData['TxType'] = 'RELEASE';
 		$nvpData['Vendor'] = $this->vender_name;
-		$nvpData['VendorTxCode'] = 'purchase_id_'.$purchase->get_ID();
+		$nvpData['VendorTxCode'] = 'purchase_id_'.$purchase_id;
 		$nvpData['VPSTxId'] = $transaction_id;
 		$nvpData['SecurityKey'] = $security_id;
 		$nvpData['TxAuthNo'] = $transaction_auth_id;
